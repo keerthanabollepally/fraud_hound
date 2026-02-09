@@ -1,54 +1,77 @@
 from memory.memory_store import fraud_memory
-from llm_utils import safe_llm_call  # NEW IMPORT
 
 class DecisionAgent:
     def assess_ring(self, ring):
         ring_id = ring["ring_id"]
         size = ring["ring_size"]
+        job_ids = ring.get("job_ids", [])
         
-        past = fraud_memory.search(ring_id)
+        # Convert job_ids to strings to prevent TypeError
+        job_ids_str = [str(job_id) for job_id in job_ids]
         
-        if past:
+        # Check memory for repeat offenders
+        past_scams = fraud_memory.search(ring_id) if hasattr(fraud_memory, 'search') else []
+        is_repeat = len(past_scams) > 0
+        
+        # Decision Logic
+        if is_repeat:
+            severity = "CRITICAL"
+            action = "IMMEDIATE ESCALATION - Platform-wide block"
+        elif size >= 4:
             severity = "HIGH"
-            action = "Repeat offender – immediate escalation"
-            memory_note = "Known fraud ring"
+            action = "Platform-wide alert + user notifications"
+        elif size >= 2:
+            severity = "MEDIUM" 
+            action = "Targeted monitoring + user warnings"
         else:
-            if size >= 4:
-                severity = "HIGH"
-                action = "Platform alert + user warnings"
-            elif size >= 2:
-                severity = "MEDIUM"
-                action = "Flag & monitor closely"
-            else:
-                severity = "LOW"
-                action = "Log for patterns"
-            memory_note = "New fraud pattern"
-
-        # LLM EXPLANATION WITH FALLBACK
-        explanation = self._get_explanation(ring_id, severity, size, past)
+            severity = "LOW"
+            action = "Log and monitor for patterns"
         
-        fraud_memory.add(text=ring_id, meta={"ring_id": ring_id, "severity": severity})
+        # FIXED explanation generation
+        explanation = self._generate_explanation(ring_id, size, job_ids_str, severity, is_repeat)
+        
+        # Save to memory
+        fraud_memory.add(text=ring_id, meta={"severity": severity, "size": size})
         
         return {
             "ring_id": ring_id,
             "severity": severity,
             "action": action,
-            "memory_note": memory_note,
+            "ring_size": size,
+            "job_ids": job_ids_str,  # Return strings
+            "is_repeat_offender": is_repeat,
             "explanation": explanation
         }
     
-    def _get_explanation(self, ring_id, severity, size, past):
-        def llm_explain(ring_id):
-            from llm_utils import llm  # Lazy import
-            prompt = f"Explain why ring {ring_id} (size: {size}, {'repeat' if past else 'new'}) is {severity}. List 3 reasons."
-            return [line.strip() for line in llm.invoke(prompt).content.split('\n') if line.strip()]
+    def _generate_explanation(self, ring_id, size, job_ids, severity, is_repeat):
+        reasons = []
         
-        def rule_explain(ring_id):
-            reasons = [
-                f"Ring size: {size} jobs",
-                f"Status: {'Repeat offender' if past else 'New pattern'}",
-                f"Severity: {severity} (threshold-based)"
-            ]
-            return reasons
+        # Size-based reasoning
+        if size >= 4:
+            reasons.append(f"Multiple jobs ({size}) detected in coordinated attack pattern")
+        elif size >= 2:
+            reasons.append(f"Small fraud ring confirmed ({size} similar jobs)")
+        else:
+            reasons.append(f"Isolated suspicious job detected")
         
-        return safe_llm_call(llm_explain, rule_explain, ring_id)
+        # Repeat offender
+        if is_repeat:
+            reasons.append("Known fraud network - previously detected")
+        else:
+            reasons.append("New fraud pattern identified")
+        
+        # Action justification
+        if severity in ["HIGH", "CRITICAL"]:
+            reasons.append("Requires immediate platform intervention to protect users")
+        elif severity == "MEDIUM":
+            reasons.append("Requires close monitoring - potential for expansion")
+        else:
+            reasons.append("Low immediate risk but valuable for pattern recognition")
+        
+        # FIXED: Convert job_ids to strings before join
+        job_list = ", ".join(job_ids[:3])
+        if len(job_ids) > 3:
+            job_list += f"... (+{len(job_ids)-3} more)"
+        reasons.append(f"Affected jobs: {job_list}")
+        
+        return reasons

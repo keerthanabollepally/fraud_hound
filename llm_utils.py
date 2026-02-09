@@ -3,42 +3,27 @@ import json
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 
-# LLM Setup
-llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0,
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=os.getenv("OPENAI_API_KEY"))
 
 def safe_llm_call(prompt_func, fallback_func, *args, **kwargs):
-    """Production-grade LLM fallback - FLOAT GUARANTEED"""
     try:
         result = prompt_func(*args, **kwargs)
-        # FLOAT SAFETY: Ensure risk_score is always float
         if isinstance(result, dict) and "risk_score" in result:
             result["risk_score"] = float(result["risk_score"])
         return result
     except Exception as e:
-        print(f"LLM failed: {str(e)[:100]}... Using fallback.")
-        result = fallback_func(*args, **kwargs)
-        if isinstance(result, dict) and "risk_score" in result:
-            result["risk_score"] = float(result["risk_score"])
-        return result
+        print(f"LLM failed: {str(e)}... Using fallback.")
+        return fallback_func(*args, **kwargs)
 
-
+# FIXED RISK RULES - ONLY REAL SCAMS
 risk_prompt = PromptTemplate.from_template("""
-Analyze this job message for scam indicators.
+Analyze ONLY for CLEAR scam indicators:
+- Upfront payment demands (fee, deposit, registration)
+- Off-platform redirects (WhatsApp/Telegram numbers) 
+- UPI/phone payment requests
 
-Return ONLY valid JSON:
-{{
-  "risk_score": number_between_0_and_1,
-  "reasons": ["list", "of", "3-5", "signals"],
-  "suggestion": "short safety advice (1 sentence)"
-}}
-
+Return ONLY JSON: {{"risk_score": 0-1, "reasons": [""], "suggestion": ""}}
 Message: {message}
-
-Be precise. No explanations outside JSON.
 """)
 
 def llm_risk_analysis(message):
@@ -51,53 +36,34 @@ def llm_risk_analysis(message):
     
     def rule_fallback(msg):
         text = msg.lower()
+        score = 0.0
         reasons = []
         
-        if any(x in text for x in ["telegram", "whatsapp", "signal"]):
-            reasons.append("Off-platform messaging requested")
-        if any(x in text for x in ["pay", "fee", "deposit", "registration", "processing"]):
-            reasons.append("Upfront payment demanded")
-        if any(x in text for x in ["urgent", "today", "immediately", "now"]):
-            reasons.append("High-pressure urgency tactics")
-        if any(x in text for x in ["guaranteed", "100%", "easy money"]):
-            reasons.append("Unrealistic earnings promises")
+        # CRITICAL SCAM KEYWORDS ONLY (0.4+ score = flag)
+        if any(word in text for word in ["pay rs", "fee rs", "deposit rs", "upi ", "+91-", "phonepe", "gpay"]):
+            score += 0.5
+            reasons.append("Upfront payment demand")
+        if any(word in text for word in ["whatsapp ", "telegram ", "signal "]):
+            score += 0.3  
+            reasons.append("Off-platform redirect")
+        if "registration" in text and ("fee" in text or "pay" in text):
+            score += 0.2
+            reasons.append("Registration fee scam")
             
-        score = 0.0
-        if any(x in text for x in ["pay", "fee"]): score += 0.40
-        if any(x in text for x in ["telegram", "whatsapp"]): score += 0.30
-        if any(x in text for x in ["urgent", "today"]): score += 0.20
-        if len(reasons) >= 3: score += 0.10
         score = min(score, 1.0)
         
         return {
             "risk_score": float(score),
-            "reasons": reasons if reasons else ["No clear scam indicators"],
-            "suggestion": "Never pay upfront. Verify via official company website."
+            "reasons": reasons or ["No clear scam indicators"],
+            "suggestion": "Never pay upfront fees. Apply only through official company sites."
         }
     
     return safe_llm_call(llm_call, rule_fallback, message)
 
-
 undercover_prompt = PromptTemplate.from_template("""
-You are an undercover job applicant investigating potential scams.
-
-IMPORTANT: Generate FULL realistic conversation (applicant + recruiter responses).
-
-Job description: {description}
-
-Return ONLY JSON:
-{{
-  "conversation": [
-    {{"sender": "applicant", "message": "Hi I'm interested"}},
-    {{"sender": "recruiter", "message": "recruiter reply"}},
-    {{"sender": "applicant", "message": "follow up"}},
-    {{"sender": "recruiter", "message": "their reply"}},
-    ...
-  ],
-  "scam_detected": true_or_false
-}}
-
-Show 5-6 message exchanges. Reveal payment requests, urgency, WhatsApp redirects.
+Simulate applicant conversation. Return ONLY JSON:
+{{"conversation": [{{"sender": "applicant", "message": ""}}, {{"sender": "recruiter", "message": ""}}], "scam_detected": true/false}}
+Job: {description}
 """)
 
 def llm_undercover_simulation(description):
@@ -108,59 +74,11 @@ def llm_undercover_simulation(description):
     
     def rule_fallback(desc):
         text = desc.lower()
-        is_scam = any(x in text for x in ["pay", "fee", "deposit", "telegram", "whatsapp", "urgent"])
-        
-        if is_scam:
-           
-            conversation = [
-                {"sender": "applicant", "message": "Hi, I'm interested in the data entry job"},
-                {"sender": "recruiter", "message": "Congratulations! You're selected for immediate start!"},
-                {"sender": "applicant", "message": "Great! What's next?"},
-                {"sender": "recruiter", "message": "Please pay ₹500 processing fee via UPI to activate account"},
-                {"sender": "applicant", "message": "Why payment required for data entry?"},
-                {"sender": "recruiter", "message": "Standard procedure. Send to +91-9876543210 Google Pay NOW!"}
-            ]
-        else:
-            
-            conversation = [
-                {"sender": "applicant", "message": "Hi, interested in Python developer role"},
-                {"sender": "recruiter", "message": "Thanks for applying! Please submit resume via link"},
-                {"sender": "applicant", "message": "Done, anything else?"},
-                {"sender": "recruiter", "message": "Perfect. HR will contact you within 2 days. No fees required"}
-            ]
-        
-        return {
-            "conversation": conversation,
-            "scam_detected": is_scam
-        }
+        is_scam = any(word in text for word in ["pay", "fee", "deposit", "upi", "+91-", "whatsapp", "telegram"])
+        conversation = [
+            {"sender": "applicant", "message": "Hi, I'm interested in this job"},
+            {"sender": "recruiter", "message": "Pay Rs500 processing fee first!" if is_scam else "Please apply through our official careers page"}
+        ]
+        return {"conversation": conversation, "scam_detected": is_scam}
     
     return safe_llm_call(llm_call, rule_fallback, description)
-
-
-def llm_decision_explanation(ring_id, size, severity, is_repeat=False):
-    """Rich explanations for DecisionAgent"""
-    def llm_call(data):
-        prompt = f"""
-        Explain fraud ring decision: {data['ring_id']} (size: {data['size']}, severity: {data['severity']})
-        
-        Return ONLY: {{"explanation": ["reason1", "reason2", "reason3"]}}
-        """
-        chain = PromptTemplate.from_template(prompt) | llm
-        result = chain.invoke(data)
-        return json.loads(result.content)["explanation"]
-    
-    def rule_fallback(data):
-        reasons = [
-            f" Ring size: {data['size']} confirmed scam jobs",
-            f" {'Repeat offender' if data['repeat'] else 'New fraud pattern'} detected",
-            f" Severity: {data['severity']} (automated cluster analysis)"
-        ]
-        return reasons
-    
-    data = {
-        "ring_id": ring_id, 
-        "size": size, 
-        "severity": severity, 
-        "repeat": is_repeat
-    }
-    return safe_llm_call(llm_call, rule_fallback, data)
